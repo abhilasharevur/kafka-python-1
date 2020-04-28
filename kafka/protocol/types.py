@@ -1,5 +1,6 @@
 from __future__ import absolute_import
 
+import io
 import struct
 from struct import error
 
@@ -23,6 +24,53 @@ def _unpack(f, data):
         raise ValueError("Error encountered when attempting to convert value: "
                         "{!r} to struct format: '{}', hit error: {}"
                         .format(data, f, e))
+
+
+class VarInt:
+    @staticmethod
+    def len_decoder(buffer):
+        return VarInt.read_unsigned_varint(buffer) - 1
+
+    @staticmethod
+    def len_encoder(value):
+        return VarInt.write_unsigned_varint(value+1).read()
+
+    @staticmethod
+    def read_varint(buffer):
+        value = VarInt.read_unsigned_varint(buffer)
+        return (value >> 1) ^ -(value & 1)
+
+    @staticmethod
+    def read_unsigned_varint(buffer):
+        value = 0
+        i = 0
+        b = buffer.read(1)
+        b = b[0] if len(b) > 0 else 0
+
+        while (b & 0x80) != 0:
+            value |= (b & 0x7f) << i
+            i += 7
+            if i > 28:
+                raise Exception(value)
+            b = buffer.read(1)
+            b = b[0] if len(b) > 0 else 0
+        value |= b << i
+        return value
+
+    @staticmethod
+    def write_varint(value):
+        return VarInt.write_unsigned_varint((value << 1) ^ (value >> 31))
+
+    @staticmethod
+    def write_unsigned_varint(value):
+        buffer = io.BytesIO()
+        while (value & 0xffffff80) != 0:
+            b = (value & 0x7f) | 0x80
+            buffer.write(struct.pack(">B", b))
+            value = value >> 7
+        buffer.write(struct.pack(">B", value))
+        buffer.seek(0)
+        return buffer
 
 
 class Int8(AbstractType):
@@ -78,17 +126,20 @@ class Int64(AbstractType):
 
 
 class String(AbstractType):
+    len_encoder = Int16.encode
+    len_decoder = Int16.decode
+
     def __init__(self, encoding='utf-8'):
         self.encoding = encoding
 
     def encode(self, value):
         if value is None:
-            return Int16.encode(-1)
+            return self.__class__.len_encoder(-1)
         value = str(value).encode(self.encoding)
-        return Int16.encode(len(value)) + value
+        return self.__class__.len_encoder(len(value)) + value
 
     def decode(self, data):
-        length = Int16.decode(data)
+        length = self.__class__.len_decoder(data)
         if length < 0:
             return None
         value = data.read(length)
@@ -97,17 +148,25 @@ class String(AbstractType):
         return value.decode(self.encoding)
 
 
+class CompactString(String):
+    len_encoder = VarInt.len_encoder
+    len_decoder = VarInt.len_decoder
+
+
 class Bytes(AbstractType):
+    len_encoder = Int32.encode
+    len_decoder = Int32.decode
+
     @classmethod
     def encode(cls, value):
         if value is None:
-            return Int32.encode(-1)
+            return cls.len_encoder(-1)
         else:
-            return Int32.encode(len(value)) + value
+            return cls.len_encoder(len(value)) + value
 
     @classmethod
     def decode(cls, data):
-        length = Int32.decode(data)
+        length = cls.len_decoder(data)
         if length < 0:
             return None
         value = data.read(length)
@@ -118,6 +177,11 @@ class Bytes(AbstractType):
     @classmethod
     def repr(cls, value):
         return repr(value[:100] + b'...' if value is not None and len(value) > 100 else value)
+
+
+class CompactBytes(Bytes):
+    len_encoder = VarInt.len_encoder
+    len_decoder = VarInt.len_decoder
 
 
 class Boolean(AbstractType):
@@ -169,6 +233,9 @@ class Schema(AbstractType):
 
 
 class Array(AbstractType):
+    len_encoder = Int32.encode
+    len_decoder = Int32.decode
+
     def __init__(self, *array_of):
         if len(array_of) > 1:
             self.array_of = Schema(*array_of)
@@ -180,14 +247,14 @@ class Array(AbstractType):
 
     def encode(self, items):
         if items is None:
-            return Int32.encode(-1)
+            return self.__class__.len_encoder(-1)
         return b''.join(
-            [Int32.encode(len(items))] +
+            [self.__class__.len_encoder(len(items))] +
             [self.array_of.encode(item) for item in items]
         )
 
     def decode(self, data):
-        length = Int32.decode(data)
+        length = self.__class__.len_decoder(data)
         if length == -1:
             return None
         return [self.array_of.decode(data) for _ in range(length)]
@@ -196,3 +263,26 @@ class Array(AbstractType):
         if list_of_items is None:
             return 'NULL'
         return '[' + ', '.join([self.array_of.repr(item) for item in list_of_items]) + ']'
+
+
+class CompactArray(Array):
+    len_encoder = VarInt.len_encoder
+    len_decoder = VarInt.len_decoder
+
+
+class TaggedField(AbstractType):
+
+    def decode(cls, data):
+        tag = VarInt.read_unsigned_varint(data)
+        size = VarInt.len_decoder(data)
+        if size > 0:
+            val = data.read(size-1)
+            assert len(val) == size-1
+        else:
+            val = None
+        return tag, val
+
+    def encode(cls, value):
+        tag, val = value
+        size = -1 if val is None else len(val)
+        return VarInt.write_unsigned_varint(tag).read() + VarInt.len_encoder(size) + val

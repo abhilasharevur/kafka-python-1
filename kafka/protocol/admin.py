@@ -1,7 +1,7 @@
 from __future__ import absolute_import
 
 from kafka.protocol.api import Request, Response
-from kafka.protocol.types import Array, Boolean, Bytes, Int8, Int16, Int32, Int64, Schema, String
+from kafka.protocol.types import Array, Boolean, Bytes, Int8, Int16, Int32, Int64, Schema, String, CompactString, CompactArray
 
 
 class ApiVersionResponse_v0(Response):
@@ -477,6 +477,27 @@ class DescribeAclsResponse_v1(Response):
                 ('permission_type', Int8)))))
     )
 
+
+class DescribeAclsResponse_v2(Response):
+    API_KEY = 29
+    API_VERSION = 2
+    SCHEMA = Schema(
+        ('throttle_time_ms', Int32),
+        ('error_code', Int16),
+        ('error_message', CompactString('utf-8')),
+        ('resources', CompactArray(
+            ('resource_type', Int8),
+            ('resource_name', CompactString('utf-8')),
+            ('resource_pattern_type', Int8),
+            ('acls', CompactArray(
+                ('principal', CompactString('utf-8')),
+                ('host', CompactString('utf-8')),
+                ('operation', Int8),
+                ('permission_type', Int8)))))
+    )
+
+
+
 class DescribeAclsRequest_v0(Request):
     API_KEY = 29
     API_VERSION = 0
@@ -489,6 +510,7 @@ class DescribeAclsRequest_v0(Request):
         ('operation', Int8),
         ('permission_type', Int8)
     )
+
 
 class DescribeAclsRequest_v1(Request):
     API_KEY = 29
@@ -503,6 +525,25 @@ class DescribeAclsRequest_v1(Request):
         ('operation', Int8),
         ('permission_type', Int8)
     )
+
+
+class DescribeAclsRequest_v2(Request):
+    """
+    Enable flexible version
+    """
+    API_KEY = 29
+    API_VERSION = 2
+    RESPONSE_TYPE = DescribeAclsResponse_v2
+    SCHEMA = Schema(
+        ('resource_type', Int8),
+        ('resource_name', CompactString('utf-8')),
+        ('resource_pattern_type_filter', Int8),
+        ('principal', CompactString('utf-8')),
+        ('host', CompactString('utf-8')),
+        ('operation', Int8),
+        ('permission_type', Int8)
+    )
+
 
 DescribeAclsRequest = [DescribeAclsRequest_v0, DescribeAclsRequest_v1]
 DescribeAclsResponse = [DescribeAclsResponse_v0, DescribeAclsResponse_v1]

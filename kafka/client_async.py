@@ -753,24 +753,37 @@ class KafkaClient(object):
             node_id or None if no suitable node was found
         """
         nodes = [broker.nodeId for broker in self.cluster.brokers()]
+        bootstrap_nodes = [broker.nodeId for broker in self.cluster._bootstrap_brokers.values()]
+        all_nodes = nodes + bootstrap_nodes
+        node_sets = {"connected": [], "fresh": [], "others": []}
+        for node in all_nodes:
+            conn = self._conns.get(node)
+            if not conn:
+                node_sets["fresh"].append(node)
+            elif conn.connected():
+                node_sets["connected"].append(node)
+            else:
+                node_sets["others"].append(node)
         random.shuffle(nodes)
 
         inflight = float('inf')
         found = None
-        for node_id in nodes:
-            conn = self._conns.get(node_id)
-            connected = conn is not None and conn.connected()
-            blacked_out = conn is not None and conn.blacked_out()
-            curr_inflight = len(conn.in_flight_requests) if conn is not None else 0
-            if connected and curr_inflight == 0:
-                # if we find an established connection
-                # with no in-flight requests, we can stop right away
-                return node_id
-            elif not blacked_out and curr_inflight < inflight:
-                # otherwise if this is the best we have found so far, record that
-                inflight = curr_inflight
-                found = node_id
-
+        for name, node_set in node_sets.items():
+            log.debug("Searching node in %s", name)
+            for node_id in node_set:
+                conn = self._conns.get(node_id)
+                connected = conn is not None and conn.connected()
+                blacked_out = conn is not None and conn.blacked_out()
+                curr_inflight = len(conn.in_flight_requests) if conn is not None else 0
+                if connected and curr_inflight == 0:
+                    # if we find an established connection
+                    # with no in-flight requests, we can stop right away
+                    return node_id
+                elif not blacked_out and curr_inflight < inflight:
+                    # otherwise if this is the best we have found so far, record that
+                    inflight = curr_inflight
+                    found = node_id
+        found = found or bootstrap_nodes[0]
         return found
 
     def set_topics(self, topics):
